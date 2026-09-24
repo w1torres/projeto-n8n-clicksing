@@ -1,0 +1,655 @@
+{
+  "name": "Assinatura - 1. Envio",
+  "nodes": [
+    {
+      "id": "webhook_trigger",
+      "name": "Webhook Manual",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assinatura/enviar",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "read_csv",
+      "name": "Ler CSV",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "filePath": "/home/node/n8n/dados/colaboradores.csv"
+      }
+    },
+    {
+      "id": "parse_csv",
+      "name": "Parsear CSV",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "operation": "fromFile",
+        "fileFormat": "csv",
+        "options": {}
+      }
+    },
+    {
+      "id": "preparar_dados",
+      "name": "Preparar Dados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs'); const { PDFDocument, StandardFonts, rgb } = require('pdf-lib'); const items = $input.all(); const results = []; const clicksignEnv = $env.CLICKSIGN_ENV || 'sandbox'; const baseUrl = clicksignEnv === 'production' ? $env.CLICKSIGN_API_URL_PRODUCTION : $env.CLICKSIGN_API_URL_SANDBOX; const folderId = ($env.CLICKSIGN_FOLDER_ID || '').trim(); const pdfTemplateBytes = fs.readFileSync($env.DOCUMENTO_PATH); const deadline = new Date(); deadline.setDate(deadline.getDate() + 30); function escapeSql(value) { return String(value ?? '').replace(/'/g, \"''\"); } function somenteDigitos(value) { return String(value ?? '').replace(/\\D/g, ''); } const documentoTitulo = $env.DOCUMENTO_TITULO || 'Documento para assinatura'; for (const item of items) { const nome = (item.json.nome || '').trim(); const cpf = (item.json.cpf || '').trim(); const email = (item.json.email || '').trim(); const telefoneDigitos = somenteDigitos(item.json.telefone); const local = (item.json.local_assinatura || '').trim(); if (!nome || !cpf || !email) { throw new Error('Registro invalido no CSV (faltando nome/cpf/email): ' + JSON.stringify(item.json)); } const telefoneE164 = telefoneDigitos ? ('+55' + telefoneDigitos.replace(/^55/, '')) : ''; const dataAssinaturaExtenso = new Date().toLocaleDateString('pt-BR'); const pdfDoc = await PDFDocument.load(pdfTemplateBytes); const font = await pdfDoc.embedFont(StandardFonts.Helvetica); const pages = pdfDoc.getPages(); const ultimaPagina = pages[pages.length - 1]; ultimaPagina.drawText(nome, { x: 220, y: 526, size: 11, font: font, color: rgb(0, 0, 0) }); ultimaPagina.drawText(cpf, { x: 220, y: 507, size: 11, font: font, color: rgb(0, 0, 0) }); ultimaPagina.drawText(local + ' - ' + dataAssinaturaExtenso, { x: 220, y: 486, size: 11, font: font, color: rgb(0, 0, 0) }); const pdfEstampadoBytes = await pdfDoc.save(); const documentoBase64 = 'data:application/pdf;base64,' + Buffer.from(pdfEstampadoBytes).toString('base64'); const envelopePayload = { data: { type: 'envelopes', attributes: { name: documentoTitulo + ' - ' + nome, deadline_at: deadline.toISOString(), locale: 'pt-BR', auto_close: true, remind_interval: '3', block_after_refusal: false, default_subject: 'Solicitacao de Assinatura - ' + documentoTitulo, default_message: 'Ola ' + nome + ', por favor confirme e assine o documento. CPF: ' + cpf + '. Local: ' + local + '.', deadline_partial_signature_action: 'closed' } } }; if (folderId) { envelopePayload.data.relationships = { folder: { data: { type: 'folders', id: folderId } } }; } results.push({ json: { nome_completo: nome, cpf: cpf, email: email, telefone: telefoneE164, telefone_digitos: telefoneDigitos, local_assinatura: local, clicksign_base_url: baseUrl, clicksign_folder_id: folderId, documento_titulo: documentoTitulo, envelope_payload_json: JSON.stringify(envelopePayload), documento_base64: documentoBase64, nome_completo_sql: escapeSql(nome), cpf_sql: escapeSql(cpf), email_sql: escapeSql(email), telefone_sql: escapeSql(telefoneE164), local_assinatura_sql: escapeSql(local) } }); } return results;"
+      }
+    },
+    {
+      "id": "listar_pastas",
+      "name": "ClickSign - Listar Pastas (auxiliar)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        620
+      ],
+      "notes": "Node solto, sem conexao. Use 'Execute step' manualmente na UI do n8n para descobrir o UUID de uma pasta e colar em CLICKSIGN_FOLDER_ID no .env. Ambiente (sandbox/producao) segue CLICKSIGN_ENV.",
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CLICKSIGN_ENV === 'production' ? $env.CLICKSIGN_API_URL_PRODUCTION : $env.CLICKSIGN_API_URL_SANDBOX }}/folders",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "criar_envelope",
+      "name": "ClickSign - Criar Envelope",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.clicksign_base_url }}/envelopes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.envelope_payload_json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "notes": "Sem Split In Batches no meio: fora de um loop, $('NomeDoNode') entre nodes funciona de forma confiavel (dentro de um loop, nao funcionava - foi a causa dos 2 erros anteriores 'envelopes//documents').",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "adicionar_documento",
+      "name": "ClickSign - Adicionar Documento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}/documents",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"type\":\"documents\",\"attributes\":{\"filename\":\"{{ $('Preparar Dados').item.json.documento_titulo }}.pdf\",\"content_base64\":\"{{ $('Preparar Dados').item.json.documento_base64 }}\"}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "adicionar_signatario",
+      "name": "ClickSign - Adicionar Signatário",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}/signers",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"type\":\"signers\",\"attributes\":{\"name\":\"{{ $('Preparar Dados').item.json.nome_completo }}\",\"email\":\"{{ $('Preparar Dados').item.json.email }}\",\"phone_number\":\"{{ $('Preparar Dados').item.json.telefone_digitos }}\",\"documentation\":\"{{ $('Preparar Dados').item.json.cpf }}\",\"has_documentation\":true,\"refusable\":false,\"communicate_events\":{\"signature_request\":\"whatsapp\",\"signature_reminder\":\"email\",\"document_signed\":\"whatsapp\"}}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "requisito_assinatura",
+      "name": "ClickSign - Requisito Assinatura",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}/requirements",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"type\":\"requirements\",\"attributes\":{\"action\":\"agree\",\"role\":\"sign\"},\"relationships\":{\"document\":{\"data\":{\"type\":\"documents\",\"id\":\"{{ $('ClickSign - Adicionar Documento').item.json.data.id }}\"}},\"signer\":{\"data\":{\"type\":\"signers\",\"id\":\"{{ $('ClickSign - Adicionar Signatário').item.json.data.id }}\"}}}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "requisito_autenticacao",
+      "name": "ClickSign - Requisito Autenticação",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}/requirements",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"type\":\"requirements\",\"attributes\":{\"action\":\"provide_evidence\",\"auth\":\"whatsapp\"},\"relationships\":{\"document\":{\"data\":{\"type\":\"documents\",\"id\":\"{{ $('ClickSign - Adicionar Documento').item.json.data.id }}\"}},\"signer\":{\"data\":{\"type\":\"signers\",\"id\":\"{{ $('ClickSign - Adicionar Signatário').item.json.data.id }}\"}}}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "ativar_envelope",
+      "name": "ClickSign - Ativar Envelope",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        300
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"id\":\"{{ $('ClickSign - Criar Envelope').item.json.data.id }}\",\"type\":\"envelopes\",\"attributes\":{\"status\":\"running\"}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "notificar_envelope",
+      "name": "ClickSign - Notificar Envelope",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        300
+      ],
+      "notes": "Passo obrigatorio: ativar o envelope (PATCH status=running) NAO dispara o e-mail sozinho, confirmado na doc oficial (fluxo-completo-da-assinatura-presencial). Precisa desta chamada explicita para realmente notificar o signatario.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Preparar Dados').item.json.clicksign_base_url }}/envelopes/{{ $('ClickSign - Criar Envelope').item.json.data.id }}/notifications",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/vnd.api+json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.api+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"data\":{\"type\":\"notifications\",\"attributes\":{}}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ICKXojjnwAGcxbZH",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "id": "inserir_assinatura",
+      "name": "Inserir Assinatura",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO assinaturas (nome_completo, cpf, email, telefone, local_assinatura, status, clicksign_envelope_id, clicksign_document_id, clicksign_signer_id, canal_notificacao) VALUES ('{{ $('Preparar Dados').item.json.nome_completo_sql }}', '{{ $('Preparar Dados').item.json.cpf_sql }}', '{{ $('Preparar Dados').item.json.email_sql }}', '{{ $('Preparar Dados').item.json.telefone_sql }}', '{{ $('Preparar Dados').item.json.local_assinatura_sql }}', 'enviado', '{{ $('ClickSign - Criar Envelope').item.json.data.id }}', '{{ $('ClickSign - Adicionar Documento').item.json.data.id }}', '{{ $('ClickSign - Adicionar Signatário').item.json.data.id }}', 'clicksign_nativo') RETURNING id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "liBONwW1XNb8sTzM",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "id": "inserir_auditoria",
+      "name": "Inserir Auditoria",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2420,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO auditoria_assinaturas (assinatura_id, acao, detalhes) VALUES ({{ $json.id }}, 'envelope_criado', 'Envelope {{ $(\"ClickSign - Criar Envelope\").item.json.data.id }} criado e ativado. Notificacao de assinatura enviada nativamente pelo ClickSign para {{ $(\"Preparar Dados\").item.json.email_sql }}.');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "liBONwW1XNb8sTzM",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "id": "resumir_resultado",
+      "name": "Resumir Resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        300
+      ],
+      "notes": "Junta todos os itens (1 por colaborador) num unico item, para o node Respond to Webhook (que so pode responder uma vez por chamada).",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all(); return [{ json: { status: 'sucesso', total_processado: items.length, mensagem: 'Envelopes criados e notificacoes do ClickSign disparadas.', processado_em: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "responder",
+      "name": "Responder",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Manual": {
+      "main": [
+        [
+          {
+            "node": "Ler CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler CSV": {
+      "main": [
+        [
+          {
+            "node": "Parsear CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear CSV": {
+      "main": [
+        [
+          {
+            "node": "Preparar Dados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Dados": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Criar Envelope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Criar Envelope": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Adicionar Documento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Adicionar Documento": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Adicionar Signatário",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Adicionar Signatário": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Requisito Assinatura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Requisito Assinatura": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Requisito Autenticação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Requisito Autenticação": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Ativar Envelope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Ativar Envelope": {
+      "main": [
+        [
+          {
+            "node": "ClickSign - Notificar Envelope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inserir Assinatura": {
+      "main": [
+        [
+          {
+            "node": "Inserir Auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inserir Auditoria": {
+      "main": [
+        [
+          {
+            "node": "Resumir Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumir Resultado": {
+      "main": [
+        [
+          {
+            "node": "Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ClickSign - Notificar Envelope": {
+      "main": [
+        [
+          {
+            "node": "Inserir Assinatura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

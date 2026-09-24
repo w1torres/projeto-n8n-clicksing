@@ -1,0 +1,70 @@
+{
+  "name": "Assinatura - 3. Relatório Diário",
+  "nodes": [
+    {
+      "id": "cron_relatorio",
+      "name": "Todo Dia 09h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 9 * * *" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "agregar_dados",
+      "name": "Agregar Dados",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [220, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'assinado') AS assinados, COUNT(*) FILTER (WHERE status = 'enviado') AS pendentes, COUNT(*) FILTER (WHERE status = 'recusado') AS recusados, ROUND(AVG(EXTRACT(EPOCH FROM (data_assinatura - data_envio)) / 3600.0) FILTER (WHERE status = 'assinado'), 1) AS taxa_media_horas FROM assinaturas WHERE DATE(data_envio) = CURRENT_DATE;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "formatar_relatorio",
+      "name": "Formatar Relatório",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const linha = $input.first().json;\n\nconst total = Number(linha.total) || 0;\nconst assinados = Number(linha.assinados) || 0;\nconst pendentes = Number(linha.pendentes) || 0;\nconst recusados = Number(linha.recusados) || 0;\nconst taxaMediaHoras = linha.taxa_media_horas != null ? Number(linha.taxa_media_horas) : null;\n\nconst percentual = total > 0 ? Math.round((assinados / total) * 1000) / 10 : 0;\n\nconst blocosPreenchidos = Math.round(percentual / 5);\nconst barra = '█'.repeat(blocosPreenchidos) + '░'.repeat(20 - blocosPreenchidos);\n\nconst dataRelatorio = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\nreturn [{\n  json: {\n    data_relatorio: dataRelatorio,\n    total,\n    assinados,\n    pendentes,\n    recusados,\n    percentual_assinados: percentual,\n    taxa_media_horas: taxaMediaHoras,\n    barra_progresso: barra\n  }\n}];"
+      }
+    },
+    {
+      "id": "email_relatorio",
+      "name": "Enviar Relatório",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [660, 300],
+      "parameters": {
+        "fromEmail": "={{ $env.OUTLOOK_FROM_EMAIL }}",
+        "toEmail": "={{ $env.GESTOR_EMAIL }}",
+        "subject": "=Relatório Diário - Assinaturas LGPD ({{ $json.data_relatorio }})",
+        "emailFormat": "html",
+        "html": "=<h2>Relatorio Diario de Assinaturas — {{ $json.data_relatorio }}</h2><table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><tr><td>Total enviados hoje</td><td>{{ $json.total }}</td></tr><tr><td>Assinados</td><td>{{ $json.assinados }}</td></tr><tr><td>Pendentes</td><td>{{ $json.pendentes }}</td></tr><tr><td>Recusados</td><td>{{ $json.recusados }}</td></tr><tr><td>Percentual assinado</td><td>{{ $json.percentual_assinados }}%</td></tr><tr><td>Tempo medio ate assinatura (h)</td><td>{{ $json.taxa_media_horas }}</td></tr></table><p style=\"font-family:monospace\">{{ $json.barra_progresso }} {{ $json.percentual_assinados }}%</p>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": { "id": "", "name": "Outlook SMTP" }
+      }
+    }
+  ],
+  "connections": {
+    "Todo Dia 09h": { "main": [[{ "node": "Agregar Dados", "type": "main", "index": 0 }]] },
+    "Agregar Dados": { "main": [[{ "node": "Formatar Relatório", "type": "main", "index": 0 }]] },
+    "Formatar Relatório": { "main": [[{ "node": "Enviar Relatório", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,0 +1,192 @@
+{
+  "name": "Assinatura - 2. Webhook ClickSign",
+  "nodes": [
+    {
+      "id": "webhook_clicksign",
+      "name": "Webhook ClickSign",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "clicksign/assinado",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "validar_hmac",
+      "name": "Validar HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const crypto = require('crypto');\n\nconst item = $input.item;\nconst headers = item.json.headers || {};\nconst hmacHeader = headers['content-hmac'] || headers['Content-Hmac'] || '';\n\n// NOTA: dependendo da versao do n8n, o corpo cru (com a opcao \"Raw Body\"\n// habilitada no node Webhook) pode aparecer em propriedades diferentes.\n// Esta cadeia de fallback cobre os casos mais comuns; se a validacao HMAC\n// falhar sempre, confira em n8n > Executions qual propriedade realmente\n// contem o body cru e ajuste aqui.\nconst rawBody = item.json.rawBody\n  || item.json.body\n  || (item.binary && item.binary.data && Buffer.from(item.binary.data.data, 'base64').toString('utf8'))\n  || JSON.stringify(item.json.body || item.json);\n\nconst secret = $env.CLICKSIGN_WEBHOOK_SECRET || '';\nif (!secret) {\n  throw new Error('CLICKSIGN_WEBHOOK_SECRET nao configurado no .env.');\n}\n\nconst hash = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');\nconst assinaturaEsperada = `sha256=${hash}`;\n\nif (hmacHeader !== assinaturaEsperada) {\n  throw new Error(`Assinatura HMAC invalida. Recebido: ${hmacHeader} | Esperado: ${assinaturaEsperada}`);\n}\n\nlet body;\ntry {\n  body = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;\n} catch (e) {\n  body = item.json.body || item.json;\n}\n\n// Melhor tentativa de leitura do payload da Clicksign v3. O schema exato do\n// evento de webhook nao foi confirmado com 100% de certeza na pesquisa —\n// confira o payload real recebido (n8n > Executions) e ajuste os caminhos\n// abaixo se os campos vierem vazios.\nconst eventoNome = body?.event?.name || body?.data?.attributes?.event_name || body?.name || 'desconhecido';\nconst envelopeId = body?.data?.attributes?.envelope?.id || body?.event?.data?.envelope?.id || body?.envelope?.id || body?.data?.relationships?.envelope?.data?.id || null;\nconst signerEmail = body?.data?.attributes?.signer?.email || body?.event?.data?.signer?.email || body?.signer?.email || null;\nconst assinadoEm = body?.data?.attributes?.signer?.signed_at || body?.event?.occurred_at || new Date().toISOString();\n\nconst nomeLower = String(eventoNome).toLowerCase();\nlet evento_tipo = 'outro';\nif (nomeLower.includes('refus')) {\n  evento_tipo = 'recusado';\n} else if (nomeLower.includes('sign') || nomeLower.includes('close')) {\n  evento_tipo = 'assinado';\n}\n\nfunction escapeSql(value) {\n  return String(value ?? '').replace(/'/g, \"''\");\n}\n\nreturn {\n  json: {\n    evento_nome: eventoNome,\n    evento_tipo,\n    envelope_id: envelopeId,\n    envelope_id_sql: escapeSql(envelopeId),\n    signer_email: signerEmail,\n    signer_email_sql: escapeSql(signerEmail),\n    assinado_em: assinadoEm,\n    payload_bruto: body\n  }\n};"
+      }
+    },
+    {
+      "id": "buscar_assinatura",
+      "name": "Buscar Assinatura",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT id, nome_completo, telefone, cpf, email, local_assinatura FROM assinaturas WHERE clicksign_envelope_id = '{{ $json.envelope_id_sql }}' OR email = '{{ $json.signer_email_sql }}' ORDER BY data_envio DESC LIMIT 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "if_assinado",
+      "name": "É Assinatura?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $('Validar HMAC').item.json.evento_tipo }}",
+              "rightValue": "assinado",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "atualizar_assinado",
+      "name": "Atualizar Status Assinado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE assinaturas SET status = 'assinado', data_assinatura = '{{ $('Validar HMAC').item.json.assinado_em }}' WHERE id = {{ $json.id }} RETURNING id, nome_completo, telefone, cpf, email, local_assinatura;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "email_confirmacao",
+      "name": "Confirmação Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1100, 200],
+      "parameters": {
+        "fromEmail": "={{ $env.OUTLOOK_FROM_EMAIL }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Assinatura confirmada - {{ $env.DOCUMENTO_TITULO }}",
+        "emailFormat": "html",
+        "html": "=<h2>Ola {{ $json.nome_completo }}</h2><p>Confirmamos o recebimento da sua assinatura do documento <strong>{{ $env.DOCUMENTO_TITULO }}</strong>.</p><p>CPF: {{ $json.cpf }}<br>Local: {{ $json.local_assinatura }}</p><p>Obrigado.</p>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": { "id": "", "name": "Outlook SMTP" }
+      }
+    },
+    {
+      "id": "whatsapp_confirmacao",
+      "name": "Confirmação WhatsApp",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1320, 200],
+      "parameters": {
+        "from": "=whatsapp:{{ $env.TWILIO_WHATSAPP_FROM }}",
+        "to": "=whatsapp:{{ $('Atualizar Status Assinado').item.json.telefone }}",
+        "message": "=Ola {{ $('Atualizar Status Assinado').item.json.nome_completo }}! Confirmamos o recebimento da sua assinatura do documento {{ $env.DOCUMENTO_TITULO }}. Obrigado."
+      },
+      "credentials": {
+        "twilioApi": { "id": "", "name": "Twilio" }
+      }
+    },
+    {
+      "id": "auditoria_assinado",
+      "name": "Inserir Auditoria Assinado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1540, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO auditoria_assinaturas (assinatura_id, acao, detalhes) VALUES ({{ $('Atualizar Status Assinado').item.json.id }}, 'assinatura_confirmada', 'Confirmacao enviada por email e WhatsApp.');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "atualizar_outro",
+      "name": "Atualizar Status Recusado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 420],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE assinaturas SET status = '{{ $('Validar HMAC').item.json.evento_tipo }}' WHERE id = {{ $json.id }} RETURNING id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "auditoria_outro",
+      "name": "Inserir Auditoria Outro",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 420],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO auditoria_assinaturas (assinatura_id, acao, detalhes) VALUES ({{ $json.id }}, 'evento_recebido', 'Evento: {{ $(\"Validar HMAC\").item.json.evento_nome }}');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "liBONwW1XNb8sTzM", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "responder2",
+      "name": "Responder",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1760, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"acknowledged\", \"mensagem\": \"Evento processado.\", \"timestamp\": $now.toISO() } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook ClickSign": { "main": [[{ "node": "Validar HMAC", "type": "main", "index": 0 }]] },
+    "Validar HMAC": { "main": [[{ "node": "Buscar Assinatura", "type": "main", "index": 0 }]] },
+    "Buscar Assinatura": { "main": [[{ "node": "É Assinatura?", "type": "main", "index": 0 }]] },
+    "É Assinatura?": {
+      "main": [
+        [{ "node": "Atualizar Status Assinado", "type": "main", "index": 0 }],
+        [{ "node": "Atualizar Status Recusado", "type": "main", "index": 0 }]
+      ]
+    },
+    "Atualizar Status Assinado": { "main": [[{ "node": "Confirmação Email", "type": "main", "index": 0 }]] },
+    "Confirmação Email": { "main": [[{ "node": "Confirmação WhatsApp", "type": "main", "index": 0 }]] },
+    "Confirmação WhatsApp": { "main": [[{ "node": "Inserir Auditoria Assinado", "type": "main", "index": 0 }]] },
+    "Inserir Auditoria Assinado": { "main": [[{ "node": "Responder", "type": "main", "index": 0 }]] },
+    "Atualizar Status Recusado": { "main": [[{ "node": "Inserir Auditoria Outro", "type": "main", "index": 0 }]] },
+    "Inserir Auditoria Outro": { "main": [[{ "node": "Responder", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" }
+}

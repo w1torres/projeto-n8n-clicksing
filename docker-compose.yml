@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: n8n_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: ${DB_N8N_USER}
+      POSTGRES_PASSWORD: ${DB_N8N_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_N8N_USER} -d n8n']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres_custom:
+    image: postgres:15-alpine
+    container_name: assinatura_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: assinatura
+      POSTGRES_USER: ${DB_APP_USER}
+      POSTGRES_PASSWORD: ${DB_APP_PASSWORD}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_assinatura_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_APP_USER} -d assinatura']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${DB_N8N_USER}
+      DB_POSTGRESDB_PASSWORD: ${DB_N8N_PASSWORD}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      N8N_BASIC_AUTH_ACTIVE: 'true'
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      # Necessário para o Code node do Workflow 2 usar require('crypto')
+      # na validação HMAC do webhook do ClickSign (header Content-Hmac).
+      # "fs" liberado para o Code node ler o PDF direto (ver nota no
+      # Workflow 1 sobre o bug do Read Binary File quebrando $('Node').item).
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs
+      # pdf-lib instalado via Dockerfile, usado no "Preparar Dados" para
+      # estampar nome/CPF/local no PDF antes de enviar pro ClickSign.
+      NODE_FUNCTION_ALLOW_EXTERNAL: pdf-lib
+      # A partir do n8n 2.0, nodes de arquivo (Read Binary File) so acessam
+      # ~/.n8n-files por padrao — precisa liberar explicitamente as pastas
+      # montadas abaixo (separador e ";", nao ","). Ver:
+      # https://docs.n8n.io/hosting/configuration/environment-variables/security/
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/n8n/documentos;/home/node/n8n/dados
+      # Os workflows leem $env.* em Code nodes e em expressoes (URL do
+      # ClickSign, DOCUMENTO_PATH, etc) — essa versao do n8n bloqueia isso
+      # por padrao.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'false'
+      # Variáveis usadas via $env.* dentro dos workflows (tokens/senhas ficam
+      # nas credenciais do n8n, configuradas pela UI — não aqui).
+      CLICKSIGN_ENV: ${CLICKSIGN_ENV}
+      CLICKSIGN_API_URL_SANDBOX: ${CLICKSIGN_API_URL_SANDBOX}
+      CLICKSIGN_API_URL_PRODUCTION: ${CLICKSIGN_API_URL_PRODUCTION}
+      CLICKSIGN_WEBHOOK_SECRET: ${CLICKSIGN_WEBHOOK_SECRET}
+      CLICKSIGN_FOLDER_ID: ${CLICKSIGN_FOLDER_ID}
+      DOCUMENTO_PATH: ${DOCUMENTO_PATH}
+      DOCUMENTO_TITULO: ${DOCUMENTO_TITULO}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM}
+      GESTOR_EMAIL: ${GESTOR_EMAIL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./documentos:/home/node/n8n/documentos:ro
+      - ./dados:/home/node/n8n/dados:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres_custom:
+        condition: service_healthy
+
+volumes:
+  n8n_data:
+  postgres_data:
+  postgres_assinatura_data:
